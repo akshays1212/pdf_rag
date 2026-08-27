@@ -1,0 +1,9 @@
+.env
+app.py
+rag_pipeline.py
+sample.pdf
+trial.ipynb
+rag_file/.venv
+rag_file/_pycache_
+_pycache_
+
