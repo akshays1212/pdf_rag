@@ -14,9 +14,11 @@ Rules:
 - If the user asks for information "in tabular form", "as a table", or "as a list", 
   that is a FORMAT request — find the relevant content first, then present it 
   in the requested format. Do not return Not found just because no table exists in the document.
+- DO NOT add source citations like "Source: page X" to your answer. 
+  The backend will handle all source attribution automatically from the retrieved chunks.
 
 Response format:
-1) Answer: <direct answer only, formatted as user requested if specified>
+- Provide ONLY the answer text. No "Source:" or citation info.
 """
 
 
@@ -54,7 +56,10 @@ def build_prompt(question: str, retrieved_chunks) -> str:
 
 
 def generate_answer(question: str, retrieved_chunks, model: str = "qwen3:8b") -> str:
-    """Call the local Ollama server with a Qwen model."""
+    """Call the local Ollama server with a Qwen model.
+    
+    Returns ONLY the answer text. Source attribution is handled by the backend.
+    """
     prompt = build_prompt(question, retrieved_chunks)
     response = ollama.chat(
         model=model,
@@ -63,4 +68,9 @@ def generate_answer(question: str, retrieved_chunks, model: str = "qwen3:8b") ->
             {"role": "user", "content": prompt},
         ],
     )
-    return response["message"]["content"]
+    # Return clean answer without any citation info the LLM may have added
+    answer_text = response["message"]["content"].strip()
+    # Remove any trailing "Source:" info if LLM added it (belt-and-suspenders)
+    if "Source:" in answer_text:
+        answer_text = answer_text.split("Source:")[0].strip()
+    return answer_text

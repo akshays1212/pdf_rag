@@ -4,6 +4,7 @@ from .models import Chunk, PageText
 from .vector_store import VectorStore
 from .pipeline import build_store_from_files, build_store_from_pdf, answer_question
 from .extract import extract_text, extract_text_from_pdf, extract_text_from_docx
+from .relevance_gate import check_relevance, DEFAULT_THRESHOLD  # ← add
 
 __all__ = [
     "PageText",
@@ -19,4 +20,6 @@ __all__ = [
     "build_store_from_files",   
     "build_store_from_pdf",
     "answer_question",
+    "check_relevance",
+    "DEFAULT_THRESHOLD",
 ]

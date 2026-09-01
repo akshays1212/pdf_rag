@@ -45,19 +45,28 @@ class VectorStore:
             page_number = 1
             chunk_id = str(uuid.uuid4())
 
-            if hasattr(chunk, "text"):
+            # Handle LangChain Document (from chunking.py)
+            if hasattr(chunk, "page_content") and hasattr(chunk, "metadata"):
+                text = (chunk.page_content or "").strip()
+                metadata = getattr(chunk, "metadata", {}) or {}
+                # Look for page number in metadata (chunking.py uses "page" key)
+                page_number = int(metadata.get("page", metadata.get("page_number", 1)))
+                chunk_id = str(metadata.get("id", chunk_id))
+                print(f"[DEBUG] LCDocument chunk - page_number extracted: {page_number}")
+            
+            # Handle plain Chunk object
+            elif hasattr(chunk, "text"):
                 text = (chunk.text or "").strip()
                 page_number = getattr(chunk, "page_number", 1)
                 chunk_id = str(getattr(chunk, "id", chunk_id))
-            elif hasattr(chunk, "page_content"):
-                text = (chunk.page_content or "").strip()
-                metadata = getattr(chunk, "metadata", {}) or {}
-                page_number = metadata.get("page", metadata.get("page_number", 1))
-                chunk_id = str(metadata.get("id", chunk_id))
+                print(f"[DEBUG] Text chunk - page_number: {page_number}")
+            
+            # Handle dict format
             elif isinstance(chunk, dict):
                 text = (chunk.get("text") or chunk.get("page_content") or "").strip()
                 page_number = chunk.get("page_number", chunk.get("page", 1))
                 chunk_id = str(chunk.get("id", chunk_id))
+                print(f"[DEBUG] Dict chunk - page_number: {page_number}")
 
             if text:
                 normalized.append((chunk_id, text, int(page_number)))
@@ -65,6 +74,9 @@ class VectorStore:
         if not normalized:
             return
 
+        print(f"[DEBUG-VectorStore] Normalized chunks - Pages: {[p for _, _, p in normalized]}")
+        print(f"[DEBUG-VectorStore] Total normalized: {len(normalized)} chunks")
+        
         texts = [text for _, text, _ in normalized]
         embeddings = self.embedder.encode(
             texts,
@@ -159,4 +171,5 @@ class VectorStore:
                 "rrf_score": rrf_score(doc),              # ← final fusion score
             })
 
+        print(f"[DEBUG] hybrid_query results - Pages: {[r['page_number'] for r in results]}")
         return results

@@ -98,12 +98,21 @@ def _is_table(block: str) -> bool:
 
 def chunk_pages(pages, chunk_size: int = 1200, overlap: int = 120, max_chunks: int = 1200):
     """Structure-aware chunking — keeps headings, paragraphs, and tables intact."""
+    print(f"[DEBUG-Chunking] Input pages: {len(pages)}")
+    for i, p in enumerate(pages[:3]):  # Debug first 3 pages
+        page_num = p.page_number if hasattr(p, "page_number") else 1
+        text_preview = (p.text if hasattr(p, "text") else p.page_content)[:100]
+        print(f"[DEBUG-Chunking] Page {i}: page_number={page_num}, text_preview={text_preview}")
+    
     all_chunks = []
     for page in pages:
         page_text = page.text if hasattr(page, "text") else page.page_content  # ← handle both types
         page_num = page.page_number if hasattr(page, "page_number") else 1      # ← handle both types
+        print(f"[DEBUG-Chunking] Processing page_number={page_num}")
         page_chunks = structure_aware_split(page_text, page_number=page_num, max_chunk_size=chunk_size)
+        print(f"[DEBUG-Chunking] Created {len(page_chunks)} chunks for page {page_num}")
         all_chunks.extend(page_chunks)
         if len(all_chunks) >= max_chunks:
             break
+    print(f"[DEBUG-Chunking] Total chunks: {len(all_chunks)}")
     return all_chunks[:max_chunks]

@@ -21,7 +21,7 @@ st.set_page_config(page_title="Ask My PDF", page_icon="📄", layout="centered")
 st.title("📄 Ask My Documents")
 st.caption("Upload PDF or DOCX files, then ask questions grounded in those documents.")
 
-# ── session state ────────────────────────────────────────────────────
+# ── session state ──────────────────────────────────────────────────────
 if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
 if "processed_filenames" not in st.session_state:
@@ -29,7 +29,7 @@ if "processed_filenames" not in st.session_state:
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# ── file uploader ────────────────────────────────────────────────────
+# ── file uploader ──────────────────────────────────────────────────────
 uploaded_files = st.file_uploader(
     "Upload PDF or DOCX files",
     type=["pdf", "docx"],
@@ -74,7 +74,7 @@ if st.session_state.processed_filenames:
         for name in st.session_state.processed_filenames:
             st.markdown(f"- `{name}`")
 
-# ── chat interface ───────────────────────────────────────────────────
+# ── chat interface ────────────────────────────────────────────────────
 if st.session_state.vector_store is None:
     st.info("Upload a PDF or DOCX file to begin.")
 else:
@@ -91,25 +91,25 @@ else:
                     color = {"semantic": "🔵", "keyword": "🟢", "hybrid": "🟡"}
                     st.markdown(
                         f"{color.get(source, '⚪')} **Chunk {i+1}** | "
-                        f"`{source}` | Page {chunk['page_number']} | "
+                        f"`{source}` | Page {chunk.get('page_number', '?')} | "
                         f"RRF: `{chunk.get('rrf_score', 0):.4f}` | "
                         f"Rerank: `{chunk.get('rerank_score', 0):.4f}`"
                     )
                     st.caption(chunk["text"][:300] + "...")
 
-            with st.expander("🔍 Candidate Pool (before reranking)"):  # ← inside entry loop ✅
-                for i, chunk in enumerate(entry["candidates"]):         # ← uses entry ✅
+            with st.expander("🔍 Candidate Pool (before reranking)"):
+                for i, chunk in enumerate(entry["candidates"]):
                     source = chunk.get("retrieval_source", "unknown")
                     color = {"semantic": "🔵", "keyword": "🟢", "hybrid": "🟡"}
                     st.markdown(
                         f"{color.get(source, '⚪')} **Candidate {i+1}** | "
-                        f"`{source}` | Page {chunk['page_number']} | "
+                        f"`{source}` | Page {chunk.get('page_number', '?')} | "
                         f"Sem rank: `{chunk.get('semantic_rank', 'N/A')}` | "
                         f"KW rank: `{chunk.get('keyword_rank', 'N/A')}`"
                     )
                     st.caption(chunk["text"][:200] + "...")
 
-    # ── chat input ───────────────────────────────────────────────────
+    # ── chat input ─────────────────────────────────────────────────────
     question = st.chat_input("Ask a question about your documents...")
     if question:
         with st.chat_message("user"):
@@ -132,14 +132,14 @@ else:
                     color = {"semantic": "🔵", "keyword": "🟢", "hybrid": "🟡"}
                     st.markdown(
                         f"{color.get(source, '⚪')} **Chunk {i+1}** | "
-                        f"`{source}` | Page {chunk['page_number']} | "
+                        f"`{source}` | Page {chunk.get('page_number', '?')} | "
                         f"RRF: `{chunk.get('rrf_score', 0):.4f}` | "
                         f"Rerank: `{chunk.get('rerank_score', 0):.4f}`"
                     )
                     st.caption(chunk["text"][:300] + "...")
 
             # with st.expander("🔍 Candidate Pool (before reranking)"):
-            #     for i, chunk in enumerate(candidates):                  # ← uses candidates ✅
+            #     for i, chunk in enumerate(candidates):
             #         source = chunk.get("retrieval_source", "unknown")
             #         color = {"semantic": "🔵", "keyword": "🟢", "hybrid": "🟡"}
             #         st.markdown(
@@ -155,5 +155,5 @@ else:
             "question": question,
             "answer": answer,
             "retrieved": retrieved,
-            "candidates": candidates,   # ← saved ✅
+            "candidates": candidates,
         })
