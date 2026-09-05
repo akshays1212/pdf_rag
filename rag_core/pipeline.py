@@ -6,6 +6,7 @@ from .reranker import rerank
 from .relevance_gate import check_relevance, DEFAULT_THRESHOLD
 
 import os
+from typing import List, Dict  # ← add
 
 
 def build_store_from_files(
@@ -97,8 +98,6 @@ def _check_relevance(
     reranked,
     threshold: float = DEFAULT_THRESHOLD,
 ):
-    """Deterministic relevance check — no LLM involved."""
-    # build list with rerank_score for gate check
     scored_chunks = [
         {"rerank_score": r["metadata"].get("rerank_score", float("-inf"))}
         for r in reranked
@@ -107,13 +106,49 @@ def _check_relevance(
     return is_relevant, best_score
 
 
-def _generate(question: str, retrieved, model: str):
+def _generate(question: str, retrieved, model: str, chat_history: List[Dict] = None):  # ← add chat_history
     chunks = [
         {"text": r["page_content"], "page_number": r["metadata"]["page_number"]}
         for r in retrieved
     ]
-    answer = generate_answer(question, chunks, model=model)
+    answer = generate_answer(
+        question,
+        chunks,
+        model=model,
+        chat_history=chat_history,  # ← pass through
+    )
     return answer
+
+
+def _resolve_question(question: str, chat_history: List[Dict] = None) -> str:
+    """Rewrite vague follow-up questions into standalone questions for retrieval."""
+    if not chat_history:
+        return question
+
+    followup_triggers = [
+        "what about", "how about", "and ", "what of",
+        "same for", "compare with", "versus", "vs ",
+        "explain in detail", "explain more", "tell me more",
+        "elaborate", "more details", "can you explain",
+        "what was", "what were", "previous", "last question",
+        "give more", "expand on", "in detail", "more about",
+    ]
+    q_lower = question.lower().strip()
+
+    # check startswith AND contains for short follow-ups
+    is_followup = (
+        any(q_lower.startswith(t) for t in followup_triggers)
+        or any(q_lower == t.strip() for t in followup_triggers)
+        or len(q_lower.split()) <= 4  # ← short questions are almost always follow-ups
+    )
+
+    if not is_followup:
+        return question
+
+    last_q = chat_history[-1]["question"]
+    resolved = f"{last_q} {question}"
+    print(f"[DEBUG-History] Resolved follow-up: '{question}' → '{resolved}'")
+    return resolved
 
 
 def answer_question(
@@ -123,20 +158,41 @@ def answer_question(
     top_k: int = 5,
     model: str = "qwen3:8b",
     relevance_threshold: float = DEFAULT_THRESHOLD,
+    chat_history: List[Dict] = None,  # ← add
 ):
-    # step 1 — hybrid retrieval
-    candidates = _retrieve(store, question, candidate_k=candidate_k)
+    # step 1 — resolve follow-up questions using history
+    resolved_question = _resolve_question(question, chat_history)  # ← add
 
-    # step 2 — rerank
-    reranked = _rerank(question, candidates, top_k=top_k)
+    # step 2 — hybrid retrieval using resolved question
+    candidates = _retrieve(store, resolved_question, candidate_k=candidate_k)
 
-    # step 3 — relevance gate (deterministic, no LLM)
-    is_relevant, best_score = _check_relevance(question, reranked, threshold=relevance_threshold)
+    # step 3 — rerank
+    reranked = _rerank(resolved_question, candidates, top_k=top_k)
+
+    # step 4 — relevance gate
+    is_relevant, best_score = _check_relevance(resolved_question, reranked, threshold=relevance_threshold)
+
+
+
+    print("\n========== RELEVANCE DEBUG ==========")
+    print("Question:", resolved_question)
+    print("Threshold:", relevance_threshold)
+    print("Is relevant:", is_relevant)
+    print("Best score:", best_score)
+
+    for i, r in enumerate(reranked):
+        print(
+            f"Rank {i+1} | "
+            f"Page: {r['metadata'].get('page_number')} | "
+            f"Rerank: {r['metadata'].get('rerank_score')} | "
+            f"Text: {r['page_content'][:150]!r}"
+        )
+
+    print("====================================\n")
 
     NOT_FOUND = "Not found in document."
 
     if not is_relevant:
-        # Build candidate_chunks even when not relevant (for display consistency)
         candidate_chunks = [
             {
                 "text": r["page_content"],
@@ -150,10 +206,9 @@ def answer_question(
         ]
         return NOT_FOUND, [], candidate_chunks
 
-    # step 4 — generate answer only if relevant
-    answer = _generate(question, reranked, model)
+    # step 5 — generate with history
+    answer = _generate(question, reranked, model, chat_history=chat_history)  # ← pass history
 
-    # Build final chunks with all source metadata for deterministic citations
     final_chunks = [
         {
             "text": r["page_content"],
@@ -165,7 +220,6 @@ def answer_question(
         for r in reranked
     ]
 
-    # Debug: print page numbers
     print(f"[DEBUG] Final chunks page numbers: {[c['page_number'] for c in final_chunks]}")
     print(f"[DEBUG] Reranked data: {[(r['metadata'].get('page_number'), r['page_content'][:50]) for r in reranked]}")
 
@@ -181,12 +235,8 @@ def answer_question(
         for r in candidates
     ]
 
-    # Build deterministic source attribution from actual retrieved chunks
-    # Extract unique pages from final_chunks
     source_pages = sorted(set(chunk["page_number"] for chunk in final_chunks))
     print(f"[DEBUG-Pipeline] Final source pages extracted: {source_pages}")
-    print(f"[DEBUG-Pipeline] Chunk page numbers detail: {[(i, c['page_number']) for i, c in enumerate(final_chunks)]}")
     source_text = f" [Sources: Pages {', '.join(map(str, source_pages))}]" if source_pages else ""
 
-    # Return answer with backend-generated source metadata
     return answer + source_text, final_chunks, candidate_chunks

@@ -68,13 +68,13 @@ if uploaded_files:
             st.error("One or more files could not be processed. Please try different files.")
             st.code(str(exc))
 
-# ── show which files are loaded ──────────────────────────────────────
+# ── show which files are loaded ────────────────────────────────────────
 if st.session_state.processed_filenames:
     with st.expander("📁 Loaded files"):
         for name in st.session_state.processed_filenames:
             st.markdown(f"- `{name}`")
 
-# ── chat interface ────────────────────────────────────────────────────
+# ── chat interface ─────────────────────────────────────────────────────
 if st.session_state.vector_store is None:
     st.info("Upload a PDF or DOCX file to begin.")
 else:
@@ -85,29 +85,29 @@ else:
         with st.chat_message("assistant"):
             st.markdown(entry["answer"])
 
-            with st.expander("📊 Final Chunks (after reranking)"):
-                for i, chunk in enumerate(entry["retrieved"]):
-                    source = chunk.get("retrieval_source", "unknown")
-                    color = {"semantic": "🔵", "keyword": "🟢", "hybrid": "🟡"}
-                    st.markdown(
-                        f"{color.get(source, '⚪')} **Chunk {i+1}** | "
-                        f"`{source}` | Page {chunk.get('page_number', '?')} | "
-                        f"RRF: `{chunk.get('rrf_score', 0):.4f}` | "
-                        f"Rerank: `{chunk.get('rerank_score', 0):.4f}`"
-                    )
-                    st.caption(chunk["text"][:300] + "...")
+            # with st.expander("📊 Final Chunks (after reranking)"):
+            #     for i, chunk in enumerate(entry["retrieved"]):
+            #         source = chunk.get("retrieval_source", "unknown")
+            #         color = {"semantic": "🔵", "keyword": "🟢", "hybrid": "🟡"}
+            #         st.markdown(
+            #             f"{color.get(source, '⚪')} **Chunk {i+1}** | "
+            #             f"`{source}` | Page {chunk.get('page_number', '?')} | "
+            #             f"RRF: `{chunk.get('rrf_score', 0):.4f}` | "
+            #             f"Rerank: `{chunk.get('rerank_score', 0):.4f}`"
+            #         )
+            #         st.caption(chunk["text"][:300] + "...")
 
-            with st.expander("🔍 Candidate Pool (before reranking)"):
-                for i, chunk in enumerate(entry["candidates"]):
-                    source = chunk.get("retrieval_source", "unknown")
-                    color = {"semantic": "🔵", "keyword": "🟢", "hybrid": "🟡"}
-                    st.markdown(
-                        f"{color.get(source, '⚪')} **Candidate {i+1}** | "
-                        f"`{source}` | Page {chunk.get('page_number', '?')} | "
-                        f"Sem rank: `{chunk.get('semantic_rank', 'N/A')}` | "
-                        f"KW rank: `{chunk.get('keyword_rank', 'N/A')}`"
-                    )
-                    st.caption(chunk["text"][:200] + "...")
+            # with st.expander("🔍 Candidate Pool (before reranking)"):
+            #     for i, chunk in enumerate(entry["candidates"]):
+            #         source = chunk.get("retrieval_source", "unknown")
+            #         color = {"semantic": "🔵", "keyword": "🟢", "hybrid": "🟡"}
+            #         st.markdown(
+            #             f"{color.get(source, '⚪')} **Candidate {i+1}** | "
+            #             f"`{source}` | Page {chunk.get('page_number', '?')} | "
+            #             f"Sem rank: `{chunk.get('semantic_rank', 'N/A')}` | "
+            #             f"KW rank: `{chunk.get('keyword_rank', 'N/A')}`"
+            #         )
+            #         st.caption(chunk["text"][:200] + "...")
 
     # ── chat input ─────────────────────────────────────────────────────
     question = st.chat_input("Ask a question about your documents...")
@@ -117,43 +117,59 @@ else:
 
         with st.chat_message("assistant"):
             with st.spinner("Searching and generating answer..."):
+
+                MAX_HISTORY_TURNS = 5
+                history_to_pass = [
+                    {"question": entry["question"], "answer": entry["answer"]}
+                    for entry in st.session_state.chat_history[-MAX_HISTORY_TURNS:]  # ← reads BEFORE append
+                ]
+                print(f"[DEBUG-History] Passing {len(history_to_pass)} turns to answer_question")
+
                 answer, retrieved, candidates = answer_question(
                     st.session_state.vector_store,
                     question,
                     candidate_k=20,
                     top_k=5,
+                    chat_history=history_to_pass,
                 )
 
             st.markdown(answer)
 
-            with st.expander("📊 Final Chunks (after reranking)"):
-                for i, chunk in enumerate(retrieved):
-                    source = chunk.get("retrieval_source", "unknown")
-                    color = {"semantic": "🔵", "keyword": "🟢", "hybrid": "🟡"}
-                    st.markdown(
-                        f"{color.get(source, '⚪')} **Chunk {i+1}** | "
-                        f"`{source}` | Page {chunk.get('page_number', '?')} | "
-                        f"RRF: `{chunk.get('rrf_score', 0):.4f}` | "
-                        f"Rerank: `{chunk.get('rerank_score', 0):.4f}`"
-                    )
-                    st.caption(chunk["text"][:300] + "...")
-
-            # with st.expander("🔍 Candidate Pool (before reranking)"):
-            #     for i, chunk in enumerate(candidates):
-            #         source = chunk.get("retrieval_source", "unknown")
-            #         color = {"semantic": "🔵", "keyword": "🟢", "hybrid": "🟡"}
-            #         st.markdown(
-            #             f"{color.get(source, '⚪')} **Candidate {i+1}** | "
-            #             f"`{source}` | Page {chunk['page_number']} | "
-            #             f"Sem rank: `{chunk.get('semantic_rank', 'N/A')}` | "
-            #             f"KW rank: `{chunk.get('keyword_rank', 'N/A')}`"
-            #         )
-            #         st.caption(chunk["text"][:200] + "...")
-
-        # save to history after chat message block
+        # ← append AFTER the call, correct
         st.session_state.chat_history.append({
             "question": question,
             "answer": answer,
             "retrieved": retrieved,
             "candidates": candidates,
         })
+
+            # if retrieved:
+            #     with st.expander("📊 Final Chunks (after reranking)"):
+            #         for i, chunk in enumerate(retrieved):
+            #             source = chunk.get("retrieval_source", "unknown")
+            #             color = {"semantic": "🔵", "keyword": "🟢", "hybrid": "🟡"}
+            #             st.markdown(
+            #                 f"{color.get(source, '⚪')} **Chunk {i+1}** | "
+            #                 f"`{source}` | Page {chunk.get('page_number', '?')} | "
+            #                 f"RRF: `{chunk.get('rrf_score', 0):.4f}` | "
+            #                 f"Rerank: `{chunk.get('rerank_score', 0):.4f}`"
+            #             )
+            #             st.caption(chunk["text"][:300] + "...")
+            # else:
+            #     st.warning("⚠️ No relevant chunks found — LLM was not called.")
+
+            # if candidates:
+            #     with st.expander("🔍 Candidate Pool (before reranking)"):
+            #         for i, chunk in enumerate(candidates):
+            #             source = chunk.get("retrieval_source", "unknown")
+            #             color = {"semantic": "🔵", "keyword": "🟢", "hybrid": "🟡"}
+            #             st.markdown(
+            #                 f"{color.get(source, '⚪')} **Candidate {i+1}** | "
+            #                 f"`{source}` | Page {chunk.get('page_number', '?')} | "
+            #                 f"Sem rank: `{chunk.get('semantic_rank', 'N/A')}` | "
+            #                 f"KW rank: `{chunk.get('keyword_rank', 'N/A')}`"
+            #             )
+            #             st.caption(chunk["text"][:200] + "...")
+
+        # save to history after chat message block
+        
