@@ -1,5 +1,11 @@
 from typing import List, Dict
-import ollama
+import os
+import google.generativeai as genai
+from dotenv import load_dotenv
+
+load_dotenv()
+
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 SYSTEM_PROMPT = """You are a document Q&A assistant.
 
@@ -31,18 +37,15 @@ def build_prompt(question: str, retrieved_chunks) -> str:
             page = chunk.get("page") or chunk.get("page_number") or "?"
             text = chunk.get("text") or chunk.get("page_content") or ""
             return page, text
-
         if hasattr(chunk, "page_content"):
             metadata = getattr(chunk, "metadata", {}) or {}
             page = metadata.get("page") or metadata.get("page_number") or "?"
             text = chunk.page_content or ""
             return page, text
-
         if hasattr(chunk, "text"):
             page = getattr(chunk, "page_number", "?")
             text = chunk.text or ""
             return page, text
-
         return "?", ""
 
     question = question.strip()
@@ -56,32 +59,50 @@ def build_prompt(question: str, retrieved_chunks) -> str:
         context_block = "[No retrieved context]"
     return f"Context:\n{context_block}\n\nQuestion: {question}\n\nAnswer:"
 
+
 def generate_answer(
     question: str,
     retrieved_chunks,
-    model: str = "qwen3:8b",
+    model: str = "gemini-3.5-flash-lite",   # ← default model
     chat_history: List[Dict] = None,
 ) -> str:
+    """Call Gemini Flash Lite with conversation history support."""
     prompt = build_prompt(question, retrieved_chunks)
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
+    # build conversation history for Gemini format
+    history = []
     if chat_history:
         print(f"[DEBUG-History] Injecting {len(chat_history)} history turns into LLM")
         for turn in chat_history:
-            messages.append({"role": "user", "content": turn["question"]})
-            messages.append({"role": "assistant", "content": turn["answer"]})
+            history.append({
+                "role": "user",
+                "parts": [turn["question"]]
+            })
+            history.append({
+                "role": "model",               # ← Gemini uses "model" not "assistant"
+                "parts": [turn["answer"]]
+            })
     else:
         print(f"[DEBUG-History] No history to inject")
 
-    messages.append({"role": "user", "content": prompt})
+    # init Gemini model with system instruction
+    gemini_model = genai.GenerativeModel(
+        model_name=model,
+        system_instruction=SYSTEM_PROMPT,
+    )
 
-    print(f"[DEBUG-History] Total messages sent to LLM: {len(messages)}")
+    # start chat with history
+    chat = gemini_model.start_chat(history=history)
 
-    response = ollama.chat(model=model, messages=messages)
-    answer_text = response["message"]["content"].strip()
+    # send current question with context
+    response = chat.send_message(prompt)
 
+    answer_text = response.text.strip()
+
+    # belt-and-suspenders — remove any Source: the LLM added
     if "Source:" in answer_text:
         answer_text = answer_text.split("Source:")[0].strip()
+
+    print(f"[DEBUG-History] Total history turns sent: {len(history) // 2}")
 
     return answer_text

@@ -156,7 +156,7 @@ def answer_question(
     question: str,
     candidate_k: int = 20,
     top_k: int = 5,
-    model: str = "qwen3:8b",
+    model: str = "gemini-3.5-flash-lite",
     relevance_threshold: float = DEFAULT_THRESHOLD,
     chat_history: List[Dict] = None,  # ← add
 ):

@@ -1,109 +1,244 @@
-# Ask My PDF — local RAG bot
+# Ask My PDF — Local RAG Bot
 
-A minimal, fully local RAG (Retrieval-Augmented Generation) app:
-upload a PDF, ask questions, get answers grounded in the document with page citations.
+A minimal RAG (Retrieval-Augmented Generation) app:
 
-- **Embeddings:** BGE-M3 (via `sentence-transformers`, runs on CPU)
-- **Vector store:** ChromaDB (in-memory, no server needed)
-- **Generator LLM:** Qwen (hosted on Groq's API — fast, free-tier friendly, no local GPU needed)
-- **Frontend:** Streamlit
+Upload a PDF, ask questions, and get answers grounded in the document with page citations.
 
-## 1. Get a free Groq API key
+* **Embeddings:** BGE-M3 (via `sentence-transformers`, runs on CPU)
+* **Vector store:** ChromaDB (in-memory, no server needed)
+* **Generator LLM:** Gemini 2.0 Flash-Lite via Google Gemini API
+* **Document extraction:** Docling
+* **Frontend:** Streamlit
 
-1. Sign up at https://console.groq.com (no credit card needed)
-2. Create a key at https://console.groq.com/keys
-3. Export it in your shell:
+## 1. Get a Google Gemini API Key
 
-```bash
-export GROQ_API_KEY=gsk_your_key_here
+1. Get an API key from Google AI Studio.
+2. Set the key as an environment variable.
+
+### Windows PowerShell
+
+```powershell
+$env:GOOGLE_API_KEY="your_api_key_here"
 ```
 
-Note: Groq doesn't host a plain "qwen3:8b" — the app defaults to
-`qwen/qwen3.6-27b`, the closest current equivalent (newer and larger, still
-fast/free on Groq). If you'd rather avoid Qwen's preview status on Groq, swap
-the `model` argument in `generate_answer()` (in `rag_pipeline.py`) to
-`"openai/gpt-oss-20b"`.
+### Linux / macOS
 
-**Trade-off to know:** since this calls a hosted API, your document chunks
-leave your machine and go to Groq for each question. Fine for testing or
-personal documents — worth reconsidering if you're indexing sensitive
-company files. (If that matters to you, the earlier Ollama-based local setup
-avoids this entirely — happy to give you a version that lets you toggle
-between the two.)
+```bash
+export GOOGLE_API_KEY=your_api_key_here
+```
+
+You can also place the key in a `.env` file:
+
+```env
+GOOGLE_API_KEY=your_api_key_here
+```
+
+Make sure your application loads the `.env` file using `python-dotenv`.
+
+The app uses:
+
+```text
+gemini-3.5-flash-lite
+```
+
+as the generation model.
+
+> **Privacy note:** BGE-M3 embeddings and ChromaDB run locally, but the retrieved document chunks are sent to Google's Gemini API when generating an answer. Avoid uploading sensitive or confidential documents unless this is acceptable for your use case.
 
 ## 2. Set up the Python environment
 
 ```bash
 python -m venv venv
-source venv/bin/activate      # Windows: venv\Scripts\activate
+```
 
+### Windows
+
+```bash
+venv\Scripts\activate
+```
+
+### Linux / macOS
+
+```bash
+source venv/bin/activate
+```
+
+Install the dependencies:
+
+```bash
 pip install -r requirements.txt
 ```
 
-The first time you run the app, `sentence-transformers` will download the
-BGE-M3 model (~2.2GB) from Hugging Face — this only happens once, it's cached
-after that.
+The first time you run the application, `sentence-transformers` will download the BGE-M3 model (~2.2 GB) from Hugging Face.
 
-## 3. Run it
+The model is cached locally, so it does not need to be downloaded again on subsequent runs.
+
+## 3. Run the application
 
 ```bash
 streamlit run app.py
 ```
 
-This opens the app in your browser (usually http://localhost:8501). Upload a
-PDF, wait for it to index, then ask questions in the chat box.
+The application will normally open at:
+
+```text
+http://localhost:8501
+```
+
+Upload a PDF, wait for it to be indexed, and then ask questions about its contents.
 
 ## How it works
 
-```
+```text
 PDF upload
-   │
-   ▼
-extract_text_from_pdf()   → text + table-aware markdown (Docling)
-   │
-   ▼
-chunk_pages()              → overlapping ~800-char chunks, tagged with page number
-   │
-   ▼
-VectorStore.add_chunks()   → BGE-M3 embeds each chunk → stored in ChromaDB
-   │
-   ▼
-[user asks a question]
-   │
-   ▼
-VectorStore.query()        → embeds the question, finds top-5 most similar chunks
-   │
-   ▼
-generate_answer()          → sends question + chunks to Qwen3 via Ollama
-   │
-   ▼
-Answer shown in chat, with an expandable "source excerpts" panel per message
+    │
+    ▼
+extract_text_from_pdf()
+    │
+    ▼
+Docling extraction
+    │
+    ▼
+chunk_pages()
+    │
+    ▼
+Overlapping ~800-character chunks
+with page numbers
+    │
+    ▼
+VectorStore.add_chunks()
+    │
+    ▼
+BGE-M3 embeddings
+    │
+    ▼
+ChromaDB
+    │
+    ▼
+User asks a question
+    │
+    ▼
+VectorStore.query()
+    │
+    ▼
+Retrieve top relevant chunks
+    │
+    ▼
+generate_answer()
+    │
+    ▼
+Gemini 2.0 Flash-Lite
+    │
+    ▼
+Grounded answer + page citations
 ```
 
-## Known limitations (v1 — PDF only)
+## Retrieval and Generation
 
-- **Extraction now uses Docling.** It generally performs better on both text
-   and table-heavy PDFs than plain text extractors and keeps more structure in
-   markdown output.
-- **Very complex layouts can still degrade.** Multi-column scans, rotated text,
-   or low-quality images may reduce extraction quality.
-- **No re-ranking step.** Retrieval is single-stage (embed + cosine similarity
-  top-5). For larger/noisier documents, add a reranker
-  (e.g. `Qwen3-Reranker`) between retrieval and generation for better
-  precision.
-- **In-memory vector store.** Re-uploading resets the index; nothing persists
-  across app restarts. Switch `chromadb.EphemeralClient()` to
-  `chromadb.PersistentClient(path="./chroma_db")` if you want persistence.
+### 1. Document processing
 
-## Extending to DOCX / Excel later
+Docling extracts text from the PDF while preserving useful document structure such as headings, paragraphs, and tables.
 
-Keep `app.py` and the chunking/embedding/generation logic untouched — just add
-new extraction functions in `rag_pipeline.py`:
+### 2. Chunking
 
-- **DOCX:** `python-docx` — iterate `document.paragraphs` and `document.tables`
-- **Excel:** `openpyxl` or `pandas` — one chunk per row or per logical table
-  block, so numeric lookups stay accurate (don't let a 1000-row sheet become
-  one giant chunk)
+The extracted content is divided into overlapping chunks of approximately 800 characters.
 
-Then in `app.py`, branch on file extension and route to the right extractor
-before calling the same `chunk_pages` → `VectorStore` → `generate_answer` flow.
+Each chunk retains its page number so that the retrieved information can be traced back to the original PDF.
+
+### 3. Embedding
+
+BGE-M3 converts each chunk into a numerical vector representation.
+
+These embeddings are stored in ChromaDB.
+
+### 4. Retrieval
+
+When the user asks a question, the question is also converted into an embedding.
+
+ChromaDB performs similarity search and retrieves the most relevant chunks.
+
+### 5. Generation
+
+The retrieved chunks are passed along with the user's question to:
+
+```text
+Gemini 2.0 Flash-Lite
+```
+
+Gemini generates an answer using the retrieved document context.
+
+The application then displays the answer along with the relevant source excerpts and page numbers.
+
+## Known limitations — v1
+
+* **PDF only:** The current version processes PDF files.
+* **Complex layouts:** Multi-column documents, rotated text, or low-quality scanned PDFs may reduce extraction quality.
+* **No re-ranking:** Retrieval currently uses embedding similarity only. A cross-encoder reranker can be added later to improve retrieval precision.
+* **In-memory vector store:** The current ChromaDB index is lost when the application restarts.
+
+To persist the vector database, replace:
+
+```python
+chromadb.EphemeralClient()
+```
+
+with:
+
+```python
+chromadb.PersistentClient(path="./chroma_db")
+```
+
+## Extending to DOCX / Excel
+
+The same RAG pipeline can be extended to additional document types.
+
+### DOCX
+
+Use `python-docx` to extract:
+
+* Paragraphs
+* Headings
+* Tables
+
+### Excel
+
+Use `openpyxl` or `pandas` to extract:
+
+* Worksheets
+* Rows
+* Tables
+* Cell values
+
+For large spreadsheets, avoid putting the entire sheet into one chunk. Create chunks based on rows or logical table blocks so that numerical lookups remain accurate.
+
+The overall pipeline can remain the same:
+
+```text
+Document
+    ↓
+Extraction
+    ↓
+Chunking
+    ↓
+BGE-M3 Embedding
+    ↓
+ChromaDB
+    ↓
+Similarity Search
+    ↓
+Gemini 2.0 Flash-Lite
+    ↓
+Answer + Sources
+```
+
+## Technology Stack
+
+| Component        | Technology            |
+| ---------------- | --------------------- |
+| Frontend         | Streamlit             |
+| Document Parsing | Docling               |
+| Embeddings       | BGE-M3                |
+| Vector Database  | ChromaDB              |
+| LLM              | Gemini 2.0 Flash-Lite |
+| Backend Logic    | Python                |
+| LLM API          | Google Gemini API     |

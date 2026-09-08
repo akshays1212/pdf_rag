@@ -41,7 +41,7 @@ class QuestionRequest(BaseModel):
     question: str
     candidate_k: int = 20
     top_k: int = 5
-    model: str = "qwen3:8b"
+    model: str = "gemini-3.1-flash-lite"
 
 
 class ChunkInfo(BaseModel):
