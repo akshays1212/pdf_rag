@@ -5,7 +5,6 @@ from typing import Tuple, List, Dict
 logger = logging.getLogger(__name__)
 
 # ── injection patterns ────────────────────────────────────────────────
-# patterns found in real-world injection attacks on RAG systems
 
 INJECTION_PATTERNS = [
     # direct override attempts
