@@ -8,6 +8,8 @@ import uvicorn
 import os
 
 from rag_core import build_store_from_files, answer_question
+# ── NEW: Import for prompt injection guard
+from rag_core.injection_guard import validate_user_query
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -121,6 +123,14 @@ def ask_question(req: QuestionRequest):
         raise HTTPException(
             status_code=404,
             detail="Session not found. Please upload files first."
+        )
+
+    # ── NEW: Validate query at API level for prompt injection
+    is_safe, reason = validate_user_query(req.question)
+    if not is_safe:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Query rejected: {reason}"
         )
 
     session = sessions[req.session_id]

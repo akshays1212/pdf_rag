@@ -5,7 +5,13 @@ from .vector_store import VectorStore
 from .pipeline import build_store_from_files, build_store_from_pdf, answer_question
 from .extract import extract_text, extract_text_from_pdf, extract_text_from_docx
 from .relevance_gate import check_relevance, DEFAULT_THRESHOLD  # ← add
-
+from .injection_guard import (
+    detect_injection,
+    sanitize_text,
+    scan_chunks,
+    validate_user_query,
+    scan_llm_output,
+)
 __all__ = [
     "PageText",
     "Chunk",
@@ -22,4 +28,9 @@ __all__ = [
     "answer_question",
     "check_relevance",
     "DEFAULT_THRESHOLD",
+    "detect_injection",
+    "sanitize_text",
+    "scan_chunks",
+    "validate_user_query",
+    "scan_llm_output",
 ]

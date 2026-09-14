@@ -1,7 +1,7 @@
 import os
 import tempfile
 from typing import List
-
+from .injection_guard import sanitize_text
 from .models import PageText
 
 
@@ -376,7 +376,7 @@ def extract_text_from_docx(file_path_or_bytes) -> List[PageText]:
 # ── Auto-detect ──────────────────────────────────────────────────────
 
 def extract_text(file_path_or_bytes, filename: str = "") -> List[PageText]:
-    """Auto-detect file type and extract text."""
+    """Auto-detect file type, extract text, and sanitize against prompt injections."""
     ext = ""
     if isinstance(file_path_or_bytes, (str, os.PathLike)):
         ext = os.path.splitext(str(file_path_or_bytes))[1].lower()
@@ -384,6 +384,16 @@ def extract_text(file_path_or_bytes, filename: str = "") -> List[PageText]:
         ext = os.path.splitext(filename)[1].lower()
 
     if ext == ".docx":
-        return extract_text_from_docx(file_path_or_bytes)
+        raw_pages = extract_text_from_docx(file_path_or_bytes)
     else:
-        return extract_text_from_pdf(file_path_or_bytes)
+        raw_pages = extract_text_from_pdf(file_path_or_bytes)
+
+    # Sanitize all extracted pages in one pass before returning
+    sanitized_pages = []
+    for p in raw_pages:
+        clean_text, redactions = sanitize_text(p.text)
+        if redactions:
+            print(f"[Security] Page {p.page_number}: removed {len(redactions)} injection patterns")
+        sanitized_pages.append(PageText(page_number=p.page_number, text=clean_text))
+
+    return sanitized_pages

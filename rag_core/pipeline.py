@@ -1,3 +1,7 @@
+import os
+import logging
+from typing import List, Dict
+
 from .chunking import chunk_pages
 from .extract import extract_text
 from .generation import generate_answer
@@ -5,8 +9,14 @@ from .vector_store import VectorStore
 from .reranker import rerank
 from .relevance_gate import check_relevance, DEFAULT_THRESHOLD
 
-import os
-from typing import List, Dict  # ← add
+# ── NEW: Security Imports ────────────────────────────────────────────
+from .injection_guard import (
+    validate_user_query,
+    scan_chunks,
+    scan_llm_output,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def build_store_from_files(
@@ -106,7 +116,7 @@ def _check_relevance(
     return is_relevant, best_score
 
 
-def _generate(question: str, retrieved, model: str, chat_history: List[Dict] = None):  # ← add chat_history
+def _generate(question: str, retrieved, model: str, chat_history: List[Dict] = None):
     chunks = [
         {"text": r["page_content"], "page_number": r["metadata"]["page_number"]}
         for r in retrieved
@@ -115,7 +125,7 @@ def _generate(question: str, retrieved, model: str, chat_history: List[Dict] = N
         question,
         chunks,
         model=model,
-        chat_history=chat_history,  # ← pass through
+        chat_history=chat_history,
     )
     return answer
 
@@ -158,21 +168,32 @@ def answer_question(
     top_k: int = 5,
     model: str = "gemini-3.5-flash-lite",
     relevance_threshold: float = DEFAULT_THRESHOLD,
-    chat_history: List[Dict] = None,  # ← add
+    chat_history: List[Dict] = None,
 ):
+    # ── step 0 — validate user query ─────────────────────────────────
+    is_safe, reason = validate_user_query(question)
+    if not is_safe:
+        logger.warning(f"[Security] Query blocked: {reason}")
+        return ("Your query could not be processed for security reasons.", [], [])
+
     # step 1 — resolve follow-up questions using history
-    resolved_question = _resolve_question(question, chat_history)  # ← add
+    resolved_question = _resolve_question(question, chat_history)
 
     # step 2 — hybrid retrieval using resolved question
     candidates = _retrieve(store, resolved_question, candidate_k=candidate_k)
 
+    # ── step 2.5 — scan retrieved chunks ─────────────────────────────
+    safe_candidates, flagged = scan_chunks(candidates)
+    if flagged:
+        logger.warning(f"[Security] {len(flagged)} chunks flagged and removed from context")
+    # use only safe candidates for reranking
+    candidates_to_rerank = safe_candidates if safe_candidates else candidates
+
     # step 3 — rerank
-    reranked = _rerank(resolved_question, candidates, top_k=top_k)
+    reranked = _rerank(resolved_question, candidates_to_rerank, top_k=top_k)
 
     # step 4 — relevance gate
     is_relevant, best_score = _check_relevance(resolved_question, reranked, threshold=relevance_threshold)
-
-
 
     print("\n========== RELEVANCE DEBUG ==========")
     print("Question:", resolved_question)
@@ -207,7 +228,12 @@ def answer_question(
         return NOT_FOUND, [], candidate_chunks
 
     # step 5 — generate with history
-    answer = _generate(question, reranked, model, chat_history=chat_history)  # ← pass history
+    answer = _generate(question, reranked, model, chat_history=chat_history)
+
+    # ── step 5.5 — scan LLM output ───────────────────────────────────
+    answer, was_modified = scan_llm_output(answer)
+    if was_modified:
+        logger.warning("[Security] LLM output was modified by injection guard")
 
     final_chunks = [
         {
