@@ -168,8 +168,7 @@ def answer_question(
     relevance_threshold: float = DEFAULT_THRESHOLD,
     chat_history: List[Dict] = None,
 ):
-    # ── step 0 — validate user query (FULL ML + regex + synonym) ─────
-    # validate_user_query uses complete 4-layer detection:
+
     # regex → normalize → llama guard → synonym → subtle
     is_safe, reason = validate_user_query(question)
     if not is_safe:
@@ -186,9 +185,7 @@ def answer_question(
     candidates = _retrieve(store, resolved_question, candidate_k=candidate_k)
 
     # ── step 2.5 — scan retrieved chunks (REGEX ONLY — fast) ─────────
-    # chunks are already sanitized at upload time by extract.py
     # using full ML here = 20 Llama Guard calls per query = too slow
-    # regex-only is sufficient for already-sanitized chunks
     safe_candidates, flagged = scan_chunks(candidates, use_ml=False)  # ← regex only
     if flagged:
         logger.warning(
@@ -196,7 +193,6 @@ def answer_question(
             f"Pages: {[c.get('page_number') for c in flagged]}"
         )
     # if all chunks flagged fall back to original candidates
-    # (avoid empty context causing false Not Found)
     candidates_to_rerank = safe_candidates if safe_candidates else candidates
 
     # step 3 — rerank
@@ -239,7 +235,6 @@ def answer_question(
 
     # ── step 5.5 — scan LLM output (REGEX ONLY — fast) ───────────────
     # output scanning uses regex only — ML too slow here
-    # catches any injection that slipped through into LLM output
     answer, was_modified = scan_llm_output(answer)
     if was_modified:
         logger.warning("[Security] LLM output was sanitized by injection guard")
