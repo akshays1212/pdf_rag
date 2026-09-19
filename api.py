@@ -8,8 +8,8 @@ import uvicorn
 import os
 
 from rag_core import build_store_from_files, answer_question
-# ── NEW: Import for prompt injection guard
-from rag_core.injection_guard import validate_user_query
+# ── NEW: Import for prompt injection guard & warmup
+from rag_core.injection_guard import validate_user_query, warmup
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -30,6 +30,15 @@ app.mount("/static", StaticFiles(directory="frontend"), name="static")
 @app.get("/")
 def serve_frontend():
     return FileResponse("frontend/index.html")
+
+
+# ── STARTUP EVENT ─────────────────────────────────────────────────────
+@app.on_event("startup")
+async def startup_event():
+    """Pre-load DeBERTa classifier on startup."""
+    print("[API] Warming up injection guard...")
+    warmup()
+    print("[API] ✓ Ready")
 
 
 # ── in-memory session store ───────────────────────────────────────────

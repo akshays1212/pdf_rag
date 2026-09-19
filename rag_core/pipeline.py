@@ -8,12 +8,11 @@ from .generation import generate_answer
 from .vector_store import VectorStore
 from .reranker import rerank
 from .relevance_gate import check_relevance, DEFAULT_THRESHOLD
-
-# ── NEW: Security Imports ────────────────────────────────────────────
 from .injection_guard import (
     validate_user_query,
     scan_chunks,
     scan_llm_output,
+    detect_injection_regex,  # ← add for regex-only chunk scanning
 )
 
 logger = logging.getLogger(__name__)
@@ -145,11 +144,10 @@ def _resolve_question(question: str, chat_history: List[Dict] = None) -> str:
     ]
     q_lower = question.lower().strip()
 
-    # check startswith AND contains for short follow-ups
     is_followup = (
         any(q_lower.startswith(t) for t in followup_triggers)
         or any(q_lower == t.strip() for t in followup_triggers)
-        or len(q_lower.split()) <= 4  # ← short questions are almost always follow-ups
+        or len(q_lower.split()) <= 4
     )
 
     if not is_followup:
@@ -157,7 +155,7 @@ def _resolve_question(question: str, chat_history: List[Dict] = None) -> str:
 
     last_q = chat_history[-1]["question"]
     resolved = f"{last_q} {question}"
-    print(f"[DEBUG-History] Resolved follow-up: '{question}' → '{resolved}'")
+    logger.debug(f"[History] Resolved follow-up: '{question}' → '{resolved}'")
     return resolved
 
 
@@ -166,54 +164,63 @@ def answer_question(
     question: str,
     candidate_k: int = 20,
     top_k: int = 5,
-    model: str = "gemini-3.5-flash-lite",
+    model: str = "gemini-2.0-flash-lite",
     relevance_threshold: float = DEFAULT_THRESHOLD,
     chat_history: List[Dict] = None,
 ):
-    # ── step 0 — validate user query ─────────────────────────────────
+    # ── step 0 — validate user query (FULL ML + regex + synonym) ─────
+    # validate_user_query uses complete 4-layer detection:
+    # regex → normalize → llama guard → synonym → subtle
     is_safe, reason = validate_user_query(question)
     if not is_safe:
         logger.warning(f"[Security] Query blocked: {reason}")
-        return ("Your query could not be processed for security reasons.", [], [])
+        return (
+            "Your query could not be processed for security reasons.",
+            [], []
+        )
 
     # step 1 — resolve follow-up questions using history
     resolved_question = _resolve_question(question, chat_history)
 
-    # step 2 — hybrid retrieval using resolved question
+    # step 2 — hybrid retrieval
     candidates = _retrieve(store, resolved_question, candidate_k=candidate_k)
 
-    # ── step 2.5 — scan retrieved chunks ─────────────────────────────
-    safe_candidates, flagged = scan_chunks(candidates)
+    # ── step 2.5 — scan retrieved chunks (REGEX ONLY — fast) ─────────
+    # chunks are already sanitized at upload time by extract.py
+    # using full ML here = 20 Llama Guard calls per query = too slow
+    # regex-only is sufficient for already-sanitized chunks
+    safe_candidates, flagged = scan_chunks(candidates, use_ml=False)  # ← regex only
     if flagged:
-        logger.warning(f"[Security] {len(flagged)} chunks flagged and removed from context")
-    # use only safe candidates for reranking
+        logger.warning(
+            f"[Security] {len(flagged)} chunks flagged and removed. "
+            f"Pages: {[c.get('page_number') for c in flagged]}"
+        )
+    # if all chunks flagged fall back to original candidates
+    # (avoid empty context causing false Not Found)
     candidates_to_rerank = safe_candidates if safe_candidates else candidates
 
     # step 3 — rerank
     reranked = _rerank(resolved_question, candidates_to_rerank, top_k=top_k)
 
     # step 4 — relevance gate
-    is_relevant, best_score = _check_relevance(resolved_question, reranked, threshold=relevance_threshold)
+    is_relevant, best_score = _check_relevance(
+        resolved_question, reranked, threshold=relevance_threshold
+    )
 
-    print("\n========== RELEVANCE DEBUG ==========")
-    print("Question:", resolved_question)
-    print("Threshold:", relevance_threshold)
-    print("Is relevant:", is_relevant)
-    print("Best score:", best_score)
-
-    for i, r in enumerate(reranked):
-        print(
-            f"Rank {i+1} | "
-            f"Page: {r['metadata'].get('page_number')} | "
-            f"Rerank: {r['metadata'].get('rerank_score')} | "
-            f"Text: {r['page_content'][:150]!r}"
-        )
-
-    print("====================================\n")
+    logger.debug(
+        f"[Relevance] question='{resolved_question[:60]}' | "
+        f"threshold={relevance_threshold} | "
+        f"best_score={best_score:.4f} | "
+        f"is_relevant={is_relevant}"
+    )
 
     NOT_FOUND = "Not found in document."
 
     if not is_relevant:
+        logger.info(
+            f"[Pipeline] Relevance gate blocked — "
+            f"best_score={best_score:.4f} < threshold={relevance_threshold}"
+        )
         candidate_chunks = [
             {
                 "text": r["page_content"],
@@ -230,11 +237,14 @@ def answer_question(
     # step 5 — generate with history
     answer = _generate(question, reranked, model, chat_history=chat_history)
 
-    # ── step 5.5 — scan LLM output ───────────────────────────────────
+    # ── step 5.5 — scan LLM output (REGEX ONLY — fast) ───────────────
+    # output scanning uses regex only — ML too slow here
+    # catches any injection that slipped through into LLM output
     answer, was_modified = scan_llm_output(answer)
     if was_modified:
-        logger.warning("[Security] LLM output was modified by injection guard")
+        logger.warning("[Security] LLM output was sanitized by injection guard")
 
+    # build final chunks
     final_chunks = [
         {
             "text": r["page_content"],
@@ -245,9 +255,6 @@ def answer_question(
         }
         for r in reranked
     ]
-
-    print(f"[DEBUG] Final chunks page numbers: {[c['page_number'] for c in final_chunks]}")
-    print(f"[DEBUG] Reranked data: {[(r['metadata'].get('page_number'), r['page_content'][:50]) for r in reranked]}")
 
     candidate_chunks = [
         {
@@ -262,7 +269,16 @@ def answer_question(
     ]
 
     source_pages = sorted(set(chunk["page_number"] for chunk in final_chunks))
-    print(f"[DEBUG-Pipeline] Final source pages extracted: {source_pages}")
-    source_text = f" [Sources: Pages {', '.join(map(str, source_pages))}]" if source_pages else ""
+    source_text = (
+        f" [Sources: Pages {', '.join(map(str, source_pages))}]"
+        if source_pages else ""
+    )
+
+    logger.info(
+        f"[Pipeline] Answer generated | "
+        f"pages={source_pages} | "
+        f"chunks_used={len(final_chunks)} | "
+        f"was_modified={was_modified}"
+    )
 
     return answer + source_text, final_chunks, candidate_chunks

@@ -7,10 +7,12 @@ from .extract import extract_text, extract_text_from_pdf, extract_text_from_docx
 from .relevance_gate import check_relevance, DEFAULT_THRESHOLD  # ← add
 from .injection_guard import (
     detect_injection,
+    detect_injection_regex,   # ← add
     sanitize_text,
     scan_chunks,
     validate_user_query,
     scan_llm_output,
+    warmup,
 )
 __all__ = [
     "PageText",
@@ -29,8 +31,12 @@ __all__ = [
     "check_relevance",
     "DEFAULT_THRESHOLD",
     "detect_injection",
+    "detect_injection_ml",
+    "detect_injection_regex",
     "sanitize_text",
     "scan_chunks",
     "validate_user_query",
     "scan_llm_output",
+    "warmup",
+    "detect_injection_regex",
 ]
