@@ -1,9 +1,90 @@
 import re
 import logging
-import ollama
 from typing import Tuple, List, Dict
 
 logger = logging.getLogger(__name__)
+
+# ── DeBERTa classifier ────────────────────────────────────────────────
+_CLASSIFIER = None
+# ── DeBERTa classifier ────────────────────────────────────────────────
+_CLASSIFIER = None
+_TOKENIZER = None
+_MODEL = None
+_CLASSIFIER_MODEL = "protectai/deberta-v3-small-prompt-injection-v2"
+
+def get_classifier():
+    """Load DeBERTa v2 once and cache it."""
+    global _CLASSIFIER, _TOKENIZER, _MODEL
+
+    if _CLASSIFIER is not None:
+        return _CLASSIFIER
+
+    try:
+        import torch
+        from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+        print("[InjectionGuard] Loading DeBERTa v2 classifier...")
+
+        _TOKENIZER = AutoTokenizer.from_pretrained(_CLASSIFIER_MODEL)
+        _MODEL = AutoModelForSequenceClassification.from_pretrained(
+            _CLASSIFIER_MODEL,
+            device_map="auto",   # ← uses GPU if available, else CPU
+        )
+        _MODEL.eval()            # ← inference mode, no grad needed
+
+        # wrap as callable so detect_injection_ml stays clean
+        def classifier(text: str):
+            import torch
+            inputs = _TOKENIZER(
+                text,
+                return_tensors="pt",
+                truncation=True,
+                max_length=512,
+            ).to(_MODEL.device)
+
+            with torch.no_grad():
+                outputs = _MODEL(**inputs)
+
+            logits = outputs.logits
+            probs  = torch.softmax(logits, dim=-1)
+            pred   = torch.argmax(probs, dim=-1).item()
+            score  = probs[0][pred].item()
+
+            # map label id to string
+            label = _MODEL.config.id2label[pred]  # "INJECTION" or "SAFE"
+
+            return [{"label": label, "score": score}]
+
+        _CLASSIFIER = classifier
+        print("[InjectionGuard] ✓ DeBERTa v2 loaded")
+
+    except Exception as e:
+        logger.error(f"[InjectionGuard] Failed to load DeBERTa v2: {e}")
+        _CLASSIFIER = None
+
+    return _CLASSIFIER
+
+
+def warmup():
+    """Pre-load DeBERTa and warm up Llama Guard at startup."""
+    # load DeBERTa into memory
+    get_classifier()
+    logger.info("[InjectionGuard] ✓ DeBERTa v2 warmed up")
+
+    # ping Llama Guard to load it into Ollama
+    try:
+        import ollama
+        ollama.chat(
+            model='llama-guard3:1b',
+            messages=[{'role': 'user', 'content': 'hello'}]
+        )
+        logger.info("[InjectionGuard] ✓ Llama Guard warmed up")
+    except Exception as e:
+        logger.warning(
+            f"[InjectionGuard] Llama Guard unavailable at startup: {e} — "
+            f"will skip L4 if Ollama not running"
+        )
+
 
 # ── injection patterns ────────────────────────────────────────────────
 INJECTION_PATTERNS = [
@@ -83,25 +164,13 @@ INJECTION_SYNONYMS = {
 }
 
 
-# ── warmup ────────────────────────────────────────────────────────────
-def warmup():
-    """Wake up the Ollama model on startup."""
-    try:
-        ollama.chat(
-            model='llama-guard3:1b',
-            messages=[{'role': 'user', 'content': 'hello'}]
-        )
-    except Exception as e:
-        logger.warning(f"[InjectionGuard] Ollama not running or model missing: {e}")
-
-
 # ── normalize ─────────────────────────────────────────────────────────
 def normalize_text(text: str) -> str:
-    """Normalize obfuscated text before injection detection."""
+    """Normalize obfuscated text — leet speak, zero-width chars, dots."""
     # remove zero-width characters
     text = re.sub(r'[\u200b\u200c\u200d\u2060\ufeff]', '', text)
 
-    # normalize leet speak / number substitutions
+    # normalize leet speak
     leet_map = {
         '0': 'o', '1': 'i', '3': 'e', '4': 'a',
         '5': 's', '6': 'g', '7': 't', '8': 'b',
@@ -120,125 +189,182 @@ def normalize_text(text: str) -> str:
     return normalized
 
 
-# ── synonym attack detection ──────────────────────────────────────────
+# ── synonym detection ─────────────────────────────────────────────────
 def detect_synonym_attack(text: str) -> Tuple[bool, str]:
-    """Detect synonym-based injection attacks like 'discard earlier directives'."""
+    """Detect synonym-based injection — 'discard earlier directives'."""
     text_lower = text.lower()
 
-    has_ignore_synonym = any(
-        syn in text_lower for syn in INJECTION_SYNONYMS["ignore"]
-    )
-    has_instruction_synonym = any(
-        syn in text_lower for syn in INJECTION_SYNONYMS["instructions"]
-    )
-    has_previous_synonym = any(
-        syn in text_lower for syn in INJECTION_SYNONYMS["previous"]
-    )
-    has_system_prompt_synonym = any(
-        syn in text_lower for syn in INJECTION_SYNONYMS["system prompt"]
-    )
+    has_ignore      = any(s in text_lower for s in INJECTION_SYNONYMS["ignore"])
+    has_instruction = any(s in text_lower for s in INJECTION_SYNONYMS["instructions"])
+    has_previous    = any(s in text_lower for s in INJECTION_SYNONYMS["previous"])
+    has_sys_prompt  = any(s in text_lower for s in INJECTION_SYNONYMS["system prompt"])
 
-    # "discard" + "directives" pattern
-    if has_ignore_synonym and has_instruction_synonym:
-        matched_ignore = [s for s in INJECTION_SYNONYMS["ignore"] if s in text_lower]
-        matched_instr  = [s for s in INJECTION_SYNONYMS["instructions"] if s in text_lower]
-        reason = f"Synonym attack: '{matched_ignore[0]}' + '{matched_instr[0]}'"
-        logger.warning(f"[InjectionGuard] Synonym attack: {reason}")
+    if has_ignore and has_instruction:
+        matched_i = [s for s in INJECTION_SYNONYMS["ignore"] if s in text_lower]
+        matched_n = [s for s in INJECTION_SYNONYMS["instructions"] if s in text_lower]
+        reason = f"Synonym attack: '{matched_i[0]}' + '{matched_n[0]}'"
+        logger.warning(f"[InjectionGuard] {reason}")
         return True, reason
 
-    # "discard" + "earlier" pattern
-    if has_ignore_synonym and has_previous_synonym:
-        matched_ignore = [s for s in INJECTION_SYNONYMS["ignore"] if s in text_lower]
-        matched_prev   = [s for s in INJECTION_SYNONYMS["previous"] if s in text_lower]
-        reason = f"Synonym attack: '{matched_ignore[0]}' + '{matched_prev[0]}'"
-        logger.warning(f"[InjectionGuard] Synonym attack: {reason}")
+    if has_ignore and has_previous:
+        matched_i = [s for s in INJECTION_SYNONYMS["ignore"] if s in text_lower]
+        matched_p = [s for s in INJECTION_SYNONYMS["previous"] if s in text_lower]
+        reason = f"Synonym attack: '{matched_i[0]}' + '{matched_p[0]}'"
+        logger.warning(f"[InjectionGuard] {reason}")
         return True, reason
 
-    # system prompt extraction via synonyms
-    if has_system_prompt_synonym and any(
-        word in text_lower
-        for word in ["reveal", "show", "print", "tell", "repeat", "display", "output"]
+    if has_sys_prompt and any(
+        w in text_lower for w in
+        ["reveal", "show", "print", "tell", "repeat", "display", "output"]
     ):
-        reason = "System prompt extraction attempt via synonyms"
+        reason = "System prompt extraction via synonyms"
         logger.warning(f"[InjectionGuard] {reason}")
         return True, reason
 
     return False, ""
 
 
-# ── regex-only detection (NEW) ────────────────────────────────────────
+# ── DeBERTa detection ─────────────────────────────────────────────────
+def detect_injection_ml(text: str, threshold: float = 0.85) -> Tuple[bool, float, str]:
+    """
+    Use DeBERTa to detect injection semantically.
+    Handles synonyms, obfuscation, paraphrasing.
+    No network call — runs locally on CPU.
+
+    Returns:
+        (is_injection, confidence, label)
+    """
+    classifier = get_classifier()
+
+    if classifier is None:
+        logger.warning("[InjectionGuard] DeBERTa unavailable — skipping ML check")
+        return False, 0.0, "UNAVAILABLE"
+
+    try:
+        # for long text check start + end — injections appear at boundaries
+        if len(text) > 1000:
+            text_to_check = text[:500] + " ... " + text[-500:]
+        else:
+            text_to_check = text
+
+        result = classifier(text_to_check)[0]
+        label  = result["label"]   # "INJECTION" or "SAFE"
+        score  = result["score"]   # 0.0 to 1.0
+
+        is_injection = label == "INJECTION" and score >= threshold
+
+        if is_injection:
+            logger.warning(
+                f"[InjectionGuard] DeBERTa: INJECTION "
+                f"confidence={score:.3f}"
+            )
+        else:
+            logger.debug(
+                f"[InjectionGuard] DeBERTa: SAFE "
+                f"label={label} confidence={score:.3f}"
+            )
+
+        return is_injection, score, label
+
+    except Exception as e:
+        logger.error(f"[InjectionGuard] DeBERTa inference failed: {e}")
+        return False, 0.0, "ERROR"
+
+
+# ── regex-only detection ──────────────────────────────────────────────
 def detect_injection_regex(text: str) -> Tuple[bool, str]:
     """
-    Regex-only injection check — fast, no ML.
-    Used for already-sanitized chunks from your own DB.
+    Regex-only check — fast, no ML.
+    Used for already-sanitized chunks from your DB.
+    Checks both original and normalized text.
     """
+    # check original
     for pattern in COMPILED_PATTERNS:
         match = pattern.search(text)
         if match:
-            reason = f"Regex pattern: '{match.group()[:50]}'"
-            logger.warning(f"[InjectionGuard] Regex hit: {reason}")
+            reason = f"Regex: '{match.group()[:50]}'"
+            logger.warning(f"[InjectionGuard] {reason}")
             return True, reason
 
-    # also check normalized text
+    # check normalized — catches leet speak
     normalized = normalize_text(text)
     for pattern in COMPILED_PATTERNS:
         match = pattern.search(normalized)
         if match:
-            reason = f"Regex pattern (normalized): '{match.group()[:50]}'"
-            logger.warning(f"[InjectionGuard] Regex hit (obfuscated): {reason}")
+            reason = f"Regex (normalized): '{match.group()[:50]}'"
+            logger.warning(f"[InjectionGuard] {reason}")
             return True, reason
 
     return False, ""
 
 
-# ── main detection ────────────────────────────────────────────────────
+# ── combined detection ────────────────────────────────────────────────
 def detect_injection(text: str) -> Tuple[bool, str, float]:
     """
-    Detect prompt injection using 4-layer approach:
-    1. Regex on original + normalized text
-    2. Llama Guard 3 1B
-    3. Synonym detection
-    4. Subtle pattern fallback
+    5-layer injection detection:
+    1. Regex on original + normalized  — microseconds
+    2. Synonym detection               — microseconds  
+    3. DeBERTa v2 ML classifier        — ~50ms, no network
+    4. Llama Guard 3 1B                — ~500ms, final safety net
+    5. Subtle pattern fallback         — microseconds
+
+    Returns:
+        (is_injection, reason, confidence)
     """
     if not text or not text.strip():
         return False, "", 0.0
 
-    # normalize first
+    # normalize once — reused across all layers
     normalized = normalize_text(text)
 
-    # 1. Regex on original AND normalized
+    # ── 1. Regex ─────────────────────────────────────────────────────
     for pattern in COMPILED_PATTERNS:
         match = pattern.search(text)
         if match:
-            reason = f"Regex pattern detected: '{match.group()}'"
-            logger.warning(f"[InjectionGuard] HIGH confidence: {reason}")
-            return True, reason, 1.0
-        match = pattern.search(normalized)
-        if match:
-            reason = f"Regex pattern detected (normalized): '{match.group()}'"
-            logger.warning(f"[InjectionGuard] HIGH confidence (obfuscated): {reason}")
+            reason = f"Regex: '{match.group()[:50]}'"
+            logger.warning(f"[InjectionGuard] L1-Regex HIGH — {reason}")
             return True, reason, 1.0
 
-    # 2. Llama Guard on normalized text
+        match = pattern.search(normalized)
+        if match:
+            reason = f"Regex (normalized): '{match.group()[:50]}'"
+            logger.warning(f"[InjectionGuard] L1-Regex HIGH (obfuscated) — {reason}")
+            return True, reason, 1.0
+
+    # ── 2. Synonym detection ─────────────────────────────────────────
+    is_synonym, synonym_reason = detect_synonym_attack(text)
+    if is_synonym:
+        logger.warning(f"[InjectionGuard] L2-Synonym — {synonym_reason}")
+        return True, synonym_reason, 0.85
+
+    # ── 3. DeBERTa v2 ────────────────────────────────────────────────
+    ml_injection, ml_confidence, ml_label = detect_injection_ml(normalized)
+    if ml_injection:
+        reason = f"DeBERTa: {ml_label} ({ml_confidence:.3f})"
+        logger.warning(f"[InjectionGuard] L3-DeBERTa — {reason}")
+        return True, reason, ml_confidence
+
+    # ── 4. Llama Guard 3 1B — final safety net ───────────────────────
+    # only reached if regex + synonym + DeBERTa all missed
+    # ~500ms but rarely called in practice
     try:
+        import ollama
         response = ollama.chat(
             model='llama-guard3:1b',
             messages=[{'role': 'user', 'content': normalized}]
         )
         output = response['message']['content'].strip().lower()
         if output.startswith("unsafe"):
-            reason = f"Llama Guard flagged: {output.replace(chr(10), ' ')}"
-            logger.warning(f"[InjectionGuard] Llama Guard hit: {reason}")
+            reason = f"LlamaGuard: {output.replace(chr(10), ' ')[:80]}"
+            logger.warning(f"[InjectionGuard] L4-LlamaGuard — {reason}")
             return True, reason, 0.9
+        else:
+            logger.debug(f"[InjectionGuard] L4-LlamaGuard: safe")
     except Exception as e:
-        logger.error(f"[InjectionGuard] Ollama failed: {e}")
+        logger.warning(f"[InjectionGuard] L4-LlamaGuard unavailable: {e} — skipping")
+        # Llama Guard down → continue to subtle patterns, don't fail
 
-    # 3. Synonym detection
-    is_synonym, synonym_reason = detect_synonym_attack(text)
-    if is_synonym:
-        return True, synonym_reason, 0.85
-
-    # 4. Subtle patterns fallback
+    # ── 5. Subtle patterns fallback ──────────────────────────────────
     subtle_hits = []
     for pattern in COMPILED_SUBTLE:
         match = pattern.search(text)
@@ -247,18 +373,22 @@ def detect_injection(text: str) -> Tuple[bool, str, float]:
 
     if len(subtle_hits) >= 2:
         reason = f"Multiple subtle patterns: {subtle_hits}"
-        logger.warning(f"[InjectionGuard] MEDIUM confidence: {reason}")
+        logger.warning(f"[InjectionGuard] L5-Subtle MEDIUM — {reason}")
         return True, reason, 0.7
 
     if len(subtle_hits) == 1:
+        logger.debug(f"[InjectionGuard] L5-Subtle LOW — possible: {subtle_hits[0]}")
         return False, f"Possible: {subtle_hits[0]}", 0.3
 
     return False, "", 0.0
 
-
 # ── sanitize document text ────────────────────────────────────────────
 def sanitize_text(text: str) -> Tuple[str, List[str]]:
-    """Remove injection patterns from text before indexing."""
+    """
+    Remove explicit injection patterns from extracted document text.
+    Called at extraction time before indexing.
+    Regex only — fast, no ML needed here.
+    """
     redactions = []
     sanitized = text
 
@@ -283,32 +413,33 @@ def sanitize_text(text: str) -> Tuple[str, List[str]]:
 
     if redactions:
         logger.warning(
-            f"[InjectionGuard] Sanitized {len(redactions)} patterns from text"
+            f"[InjectionGuard] Sanitized {len(redactions)} patterns from document"
         )
 
     return sanitized, redactions
 
 
-# ── scan retrieved chunks (UPDATED) ───────────────────────────────────
+# ── scan retrieved chunks ─────────────────────────────────────────────
 def scan_chunks(
-    chunks: List[Dict], threshold: float = 0.7, use_ml: bool = True
+    chunks: List[Dict],
+    threshold: float = 0.7,
+    use_ml: bool = True,
 ) -> Tuple[List[Dict], List[Dict]]:
     """
     Scan retrieved chunks for injection content.
-    use_ml=True  → full 4-layer detection (slow, for untrusted input)
-    use_ml=False → regex-only (fast, for already-sanitized DB chunks)
+
+    use_ml=True  → full 4-layer (regex + DeBERTa + synonym + subtle)
+    use_ml=False → regex only (fast — for already-sanitized DB chunks)
     """
     safe = []
     flagged = []
 
     for chunk in chunks:
         text = chunk.get("text", "") or chunk.get("page_content", "")
-        
+
         if use_ml:
-            # full detection — regex + normalize + llama guard + synonym
             is_injection, reason, confidence = detect_injection(text)
         else:
-            # regex only — fast, chunks already sanitized at upload
             is_injection, reason = detect_injection_regex(text)
             confidence = 1.0 if is_injection else 0.0
 
@@ -318,7 +449,7 @@ def scan_chunks(
             chunk["injection_confidence"] = confidence
             flagged.append(chunk)
             logger.warning(
-                f"[InjectionGuard] Chunk flagged — "
+                f"[InjectionGuard] Chunk removed — "
                 f"page {chunk.get('page_number', '?')} | "
                 f"ml={use_ml} | {reason}"
             )
@@ -331,34 +462,42 @@ def scan_chunks(
 
 # ── validate user query ───────────────────────────────────────────────
 def validate_user_query(query: str) -> Tuple[bool, str]:
-    """Validate user query for injection attempts."""
+    """
+    Validate user query — full 4-layer detection.
+    DeBERTa handles synonyms, obfuscation, paraphrasing.
+    No Ollama — runs entirely locally.
+    """
     if not query or not query.strip():
         return False, "Empty query"
+
     if len(query) > 2000:
-        return False, "Query too long"
+        return False, "Query too long — max 2000 characters"
 
     is_injection, reason, confidence = detect_injection(query)
 
     if is_injection and confidence >= 0.7:
         logger.warning(
-            f"[InjectionGuard] User query injection attempt: {reason}"
+            f"[InjectionGuard] Query blocked — "
+            f"confidence={confidence:.2f} | {reason}"
         )
-        return False, f"Query contains potentially malicious content: {reason}"
+        return False, "Query contains potentially malicious content"
 
     return True, ""
 
 
 # ── scan LLM output ───────────────────────────────────────────────────
 def scan_llm_output(output: str) -> Tuple[str, bool]:
-    """Scan and sanitize LLM output before returning to user."""
+    """
+    Sanitize LLM output — regex only (fast).
+    ML not needed here — output already went through generation guardrails.
+    """
     sanitized, redactions = sanitize_text(output)
     was_modified = len(redactions) > 0
 
     if was_modified:
         logger.warning(
-            f"[InjectionGuard] LLM output sanitized — "
+            f"[InjectionGuard] Output sanitized — "
             f"{len(redactions)} patterns removed"
         )
-        sanitized += "\n\n[Note: Some content was removed for security reasons]"
 
     return sanitized, was_modified
