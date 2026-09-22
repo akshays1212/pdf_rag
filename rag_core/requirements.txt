@@ -1,10 +1,36 @@
+# ── Web & API ─────────────────────────────────────────────────────────
 streamlit==1.38.0
-sentence-transformers==3.0.1
+fastapi
+uvicorn
+python-multipart
+
+# ── Vector Store & Embeddings ─────────────────────────────────────────
 chromadb==0.5.5
+sentence-transformers==3.0.1
+
+# ── BM25 Keyword Search ───────────────────────────────────────────────
+rank-bm25
+
+# ── LLM & Generation ─────────────────────────────────────────────────
+google-generativeai
+
+# ── Injection Guard ───────────────────────────────────────────────────
+transformers
+torch
+accelerate
 ollama==0.3.3
+
+# ── Document Extraction ───────────────────────────────────────────────
 docling
 python-docx>=0.8.11
-fastapi 
-uvicorn 
-python-multipart
+PyPDF2
+
+# ── Observability ─────────────────────────────────────────────────────
+langsmith
+langfuse
+langchain-core
+
+# ── Scheduling & Utils ────────────────────────────────────────────────
+apscheduler
+python-dotenv
 numpy
