@@ -1,36 +1,1244 @@
-# ── Web & API ─────────────────────────────────────────────────────────
-streamlit==1.38.0
-fastapi
-uvicorn
-python-multipart
+# Ask My Documents — RAG System
 
-# ── Vector Store & Embeddings ─────────────────────────────────────────
-chromadb==0.5.5
-sentence-transformers==3.0.1
+A production-oriented **Retrieval-Augmented Generation (RAG)** application for asking questions about uploaded PDF and DOCX documents.
 
-# ── BM25 Keyword Search ───────────────────────────────────────────────
-rank-bm25
+The system combines **semantic search, keyword search, cross-encoder reranking, deterministic relevance checking, conversation-aware query resolution, and multi-layer prompt-injection detection** to generate grounded answers with document source attribution.
 
-# ── LLM & Generation ─────────────────────────────────────────────────
-google-generativeai
+---
 
-# ── Injection Guard ───────────────────────────────────────────────────
+## Features
+
+* PDF and DOCX document support
+* Structure-aware document chunking
+* Semantic retrieval using Sentence Transformers
+* Keyword retrieval using BM25
+* Hybrid retrieval using Reciprocal Rank Fusion (RRF)
+* Cross-encoder reranking
+* Deterministic relevance gate to reduce hallucinations
+* Conversation-aware follow-up question handling
+* Five-layer prompt-injection detection
+* Local DeBERTa prompt-injection classifier
+* Optional Llama Guard 3 1B safety layer through Ollama
+* Deterministic source/page attribution
+* Langfuse and LangSmith observability
+* Streamlit interface
+* FastAPI backend with HTML/JavaScript frontend
+
+---
+
+# Technology Stack
+
+| Component                   | Technology                                       |
+| --------------------------- | ------------------------------------------------ |
+| Frontend                    | Streamlit + HTML/JavaScript                      |
+| API                         | FastAPI + Uvicorn                                |
+| PDF Extraction              | PyPDF2 + Docling                                 |
+| DOCX Extraction             | python-docx                                      |
+| OCR / Complex Documents     | Docling + RapidOCR                               |
+| Embeddings                  | `all-MiniLM-L6-v2`                               |
+| Keyword Search              | BM25 (`rank-bm25`)                               |
+| Vector Store                | ChromaDB                                         |
+| Reranker                    | `ms-marco-MiniLM-L-6-v2`                         |
+| Prompt Injection Classifier | `protectai/deberta-v3-small-prompt-injection-v2` |
+| Additional Safety Layer     | Llama Guard 3 1B                                 |
+| Generator LLM               | Gemini 2.0 Flash-Lite                            |
+| Observability               | Langfuse + LangSmith                             |
+| Backend                     | Python 3.10+                                     |
+
+---
+
+# 1. Get a Google Gemini API Key
+
+The application uses **Gemini 2.0 Flash-Lite** for answer generation.
+
+Get an API key from:
+
+[Google AI Studio](https://aistudio.google.com?utm_source=chatgpt.com)
+
+### Windows PowerShell
+
+```powershell
+$env:GOOGLE_API_KEY="your_api_key_here"
+```
+
+### Linux / macOS
+
+```bash
+export GOOGLE_API_KEY="your_api_key_here"
+```
+
+You can also configure the variables in a `.env` file:
+
+```env
+# LLM
+GOOGLE_API_KEY=your_api_key_here
+GEMINI_MODEL=gemini-2.0-flash-lite
+
+# Langfuse
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_HOST=https://cloud.langfuse.com
+
+# LangSmith
+LANGCHAIN_API_KEY=ls__...
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_PROJECT=hybrid-rag
+
+# Embeddings
+RAG_EMBED_MODEL=sentence-transformers/all-MiniLM-L6-v2
+```
+
+Make sure the application loads the `.env` file using `python-dotenv`.
+
+### Privacy
+
+The following components run locally after their models have been downloaded:
+
+* Embedding generation
+* BM25 retrieval
+* Cross-encoder reranking
+* DeBERTa prompt-injection detection
+* Regex and synonym-based detection
+
+The retrieved document context is sent to Google's Gemini API during answer generation.
+
+For confidential documents, ensure that sending retrieved content to an external LLM API is acceptable for your deployment.
+
+For a fully local generation setup, Gemini can be replaced with a local model such as **Qwen through Ollama**.
+
+---
+
+# 2. Install Ollama
+
+Ollama is used for the optional **Llama Guard 3 1B** injection-detection layer.
+
+Download Ollama:
+
+[Ollama](https://ollama.com?utm_source=chatgpt.com)
+
+Then pull the model:
+
+```bash
+ollama pull llama-guard3:1b
+```
+
+Llama Guard is used as the fourth layer of the injection guard.
+
+If Ollama is unavailable, the application continues using the other detection layers.
+
+---
+
+# 3. Set Up the Python Environment
+
+Create a virtual environment:
+
+```bash
+python -m venv .venv
+```
+
+### Windows
+
+```bash
+.venv\Scripts\activate
+```
+
+### Linux / macOS
+
+```bash
+source .venv/bin/activate
+```
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+The first run downloads the required Hugging Face models and caches them locally.
+
+Main models include:
+
+```text
+all-MiniLM-L6-v2
+ms-marco-MiniLM-L-6-v2
+protectai/deberta-v3-small-prompt-injection-v2
+```
+
+---
+
+# 4. Run the Application
+
+## Streamlit UI
+
+```bash
+streamlit run streamlit_pdf_app.py
+```
+
+The application will be available at:
+
+```text
+http://localhost:8501
+```
+
+## FastAPI + HTML/JavaScript Frontend
+
+```bash
+python api.py
+```
+
+The application will be available at:
+
+```text
+http://localhost:8000
+```
+
+Swagger API documentation:
+
+```text
+http://localhost:8000/docs
+```
+
+## Injection Guard Test
+
+```bash
+python test_guard_quick.py
+```
+
+---
+
+# How the System Works
+
+```text
+                    PDF / DOCX Upload
+                           │
+                           ▼
+                  Document Extraction
+             ┌─────────────┼─────────────┐
+             ▼             ▼             ▼
+          PyPDF2        Docling      python-docx
+             │             │             │
+             └─────────────┼─────────────┘
+                           ▼
+                  Injection Sanitization
+                           │
+                           ▼
+                Structure-Aware Chunking
+                           │
+                           ▼
+                    Dual Indexing
+                  ┌────────┴────────┐
+                  ▼                 ▼
+              ChromaDB            BM25
+             Semantic Search   Keyword Search
+                  │                 │
+                  └────────┬────────┘
+                           ▼
+                     User Question
+                           │
+                           ▼
+                  Query Injection Guard
+                           │
+                           ▼
+                    Query Resolution
+                           │
+                           ▼
+                    Hybrid Retrieval
+                           │
+                           ▼
+                    Top 20 Candidates
+                           │
+                           ▼
+                    Chunk Injection Scan
+                           │
+                           ▼
+                  Cross-Encoder Reranking
+                           │
+                           ▼
+                      Top 5 Chunks
+                           │
+                           ▼
+                    Relevance Gate
+                           │
+                  ┌────────┴────────┐
+                  │                 │
+               Relevant          Irrelevant
+                  │                 │
+                  ▼                 ▼
+             Gemini LLM       "Not found in
+                  │             document."
+                  ▼
+              Output Scan
+                  │
+                  ▼
+          Deterministic Sources
+                  │
+                  ▼
+          Grounded Final Answer
+```
+
+---
+
+# Document Processing
+
+## PDF Extraction
+
+PDF extraction follows a fallback-based approach.
+
+### PyPDF2
+
+PyPDF2 is attempted first because it is lightweight and provides convenient page-level extraction.
+
+```text
+PDF
+ ↓
+PyPDF2
+ ↓
+Text extracted successfully?
+ ├── Yes → Continue
+ └── No  → Docling fallback
+```
+
+### Docling
+
+Docling is used when normal PDF extraction does not provide usable content.
+
+It is particularly useful for:
+
+* Scanned PDFs
+* OCR-based extraction
+* Tables
+* Complex document structures
+* Documents where normal text extraction fails
+
+RapidOCR can be used through the Docling pipeline for image-based documents.
+
+If page-level Docling extraction cannot be produced, the document can be divided into virtual pages based on paragraph boundaries.
+
+---
+
+# DOCX Extraction
+
+DOCX documents are processed using `python-docx`.
+
+The extraction process identifies:
+
+* Paragraphs
+* Headings
+* Tables
+* Document structure
+
+Tables are converted into a markdown-style representation so that their relationships and rows can be preserved during retrieval.
+
+For DOCX files without physical PDF-style page boundaries, the application can group content into virtual pages.
+
+---
+
+# Injection Sanitization During Document Processing
+
+Document content may contain text that attempts to manipulate an LLM.
+
+Before indexing, explicit injection patterns are sanitized.
+
+Examples include:
+
+```text
+Ignore previous instructions
+Forget all prior instructions
+[ SYSTEM ]
+[ INTERNAL AI INSTRUCTION ]
+<system>
+```
+
+Detected patterns are replaced with:
+
+```text
+[REDACTED]
+```
+
+This prevents obvious malicious instructions inside documents from being directly indexed as executable-looking instructions.
+
+---
+
+# Structure-Aware Chunking
+
+The application does not rely only on fixed-size text splitting.
+
+Chunks are created using document structure.
+
+The chunking process considers:
+
+* Headings
+* Sections
+* Paragraph boundaries
+* Tables
+* Page information
+* Content type
+
+Typical configuration:
+
+```text
+chunk_size = 1200 characters
+```
+
+Tables are kept together whenever possible instead of splitting them in the middle of rows.
+
+Each chunk retains metadata such as:
+
+```text
+page_number
+content_type
+section information
+```
+
+This metadata is later used for source attribution.
+
+---
+
+# Embeddings
+
+The application uses:
+
+```text
+sentence-transformers/all-MiniLM-L6-v2
+```
+
+The model converts each chunk into a **384-dimensional vector**.
+
+These vectors are stored in ChromaDB and used for semantic similarity search.
+
+---
+
+# Hybrid Retrieval
+
+The system combines two retrieval approaches.
+
+## 1. Semantic Search
+
+ChromaDB performs vector similarity search using the generated embeddings.
+
+Semantic retrieval helps identify content that has similar meaning even when the exact keywords are different.
+
+## 2. BM25 Keyword Search
+
+BM25 provides traditional keyword-based retrieval.
+
+It is particularly useful when the query contains:
+
+* Product names
+* Customer names
+* IDs
+* Technical terms
+* Exact phrases
+* Numbers
+
+## 3. Reciprocal Rank Fusion
+
+The results from both retrieval methods are combined using **Reciprocal Rank Fusion (RRF)**.
+
+The current retrieval configuration gives greater weight to semantic retrieval while retaining keyword-search contribution.
+
+```text
+Semantic Search → 60%
+Keyword Search  → 40%
+```
+
+The fused results produce the top **20 candidate chunks**.
+
+---
+
+# Cross-Encoder Reranking
+
+The initial hybrid search retrieves up to 20 candidates.
+
+These candidates are then reranked using:
+
+```text
+ms-marco-MiniLM-L-6-v2
+```
+
+Unlike embedding-based retrieval, the cross-encoder evaluates the question and document chunk together:
+
+```text
+(question, chunk)
+```
+
+Each candidate receives a relevance score.
+
+The highest-ranked **5 chunks** are selected for generation.
+
+```text
+20 retrieved candidates
+          │
+          ▼
+Cross-Encoder
+          │
+          ▼
+5 highest-ranked chunks
+```
+
+---
+
+# Deterministic Relevance Gate
+
+Before calling the LLM, the system performs a relevance check.
+
+The best reranker score is compared against a configured threshold:
+
+```text
+threshold = -2.0
+```
+
+If the best candidate does not meet the relevance requirement:
+
+```text
+Not found in document.
+```
+
+is returned without calling Gemini.
+
+This creates a deterministic retrieval boundary and helps prevent the LLM from answering questions using information that was not sufficiently supported by the document.
+
+---
+
+# Prompt Injection Guard
+
+The application implements a multi-layer prompt-injection detection system.
+
+The detection pipeline consists of:
+
+```text
+L1 → Regex
+L2 → Synonym Detection
+L3 → DeBERTa
+L4 → Llama Guard 3
+L5 → Subtle Pattern Detection
+```
+
+Different parts of the application use different levels of scanning depending on the required speed and security.
+
+---
+
+# DeBERTa Prompt-Injection Detection
+
+The ML-based injection detector uses:
+
+```text
+protectai/deberta-v3-small-prompt-injection-v2
+```
+
+The model is loaded using Hugging Face Transformers:
+
+```python
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification
+)
+```
+
+The tokenizer and classification model are loaded with:
+
+```python
+_TOKENIZER = AutoTokenizer.from_pretrained(
+    _CLASSIFIER_MODEL
+)
+
+_MODEL = AutoModelForSequenceClassification.from_pretrained(
+    _CLASSIFIER_MODEL,
+    device_map="auto"
+)
+```
+
+`device_map="auto"` allows the Transformers runtime to place the model on an available accelerator when supported, otherwise using the CPU.
+
+The model is switched to evaluation mode:
+
+```python
+_MODEL.eval()
+```
+
+For each query, the text is tokenized with a maximum length of:
+
+```text
+512 tokens
+```
+
+Inference is performed without gradient calculation:
+
+```python
+with torch.no_grad():
+    outputs = _MODEL(**inputs)
+```
+
+The model's logits are converted into probabilities using softmax:
+
+```python
+probs = torch.softmax(logits, dim=-1)
+```
+
+The predicted class is selected using the highest probability:
+
+```python
+pred = torch.argmax(probs, dim=-1).item()
+```
+
+The model's configured label mapping is then used:
+
+```python
+label = _MODEL.config.id2label[pred]
+```
+
+The result is treated as an injection when:
+
+```text
+label == "INJECTION"
+```
+
+and the confidence exceeds the configured threshold:
+
+```text
+threshold = 0.85
+```
+
+The classifier is loaded only once and cached globally, preventing the model from being reloaded for every query.
+
+---
+
+# DeBERTa Long-Text Handling
+
+DeBERTa inference is limited to the model's supported input length.
+
+For text longer than 1000 characters, the application checks the beginning and end of the text:
+
+```text
+first 500 characters
+        +
+last 500 characters
+```
+
+This is intended to capture injection instructions that commonly appear near document or prompt boundaries while keeping inference within a manageable input size.
+
+---
+
+# Injection Guard — Layer 1: Regex
+
+The first layer checks explicit prompt-injection patterns.
+
+Examples:
+
+```text
+ignore previous instructions
+disregard prior instructions
+override instructions
+you are now...
+act as...
+pretend you are...
+reveal the system prompt
+show the system instructions
+jailbreak
+bypass safety
+```
+
+The system checks both:
+
+1. Original text
+2. Normalized text
+
+Normalization removes common obfuscation techniques such as:
+
+* Zero-width characters
+* Leetspeak
+* Excessive whitespace
+* Dot-separated words
+
+For example:
+
+```text
+i.g.n.o.r.e
+```
+
+can be normalized before pattern matching.
+
+---
+
+# Injection Guard — Layer 2: Synonym Detection
+
+The second layer detects paraphrased injection attempts.
+
+For example:
+
+```text
+discard earlier directives
+```
+
+can be detected through synonym groups for:
+
+* Ignore
+* Instructions
+* Previous
+* System prompt
+
+The detector looks for combinations of related concepts instead of relying only on exact phrases.
+
+It also detects attempts to extract system instructions using terms such as:
+
+```text
+reveal
+show
+print
+tell
+repeat
+display
+output
+```
+
+---
+
+# Injection Guard — Layer 3: DeBERTa
+
+The third layer provides semantic prompt-injection detection.
+
+Unlike regex matching, DeBERTa can identify potentially malicious requests even when the wording is different from the predefined patterns.
+
+```text
+User Query
+    │
+    ▼
+Normalization
+    │
+    ▼
+DeBERTa Classifier
+    │
+    ├── SAFE
+    │
+    └── INJECTION
+             │
+             ▼
+       Confidence ≥ 0.85
+             │
+             ▼
+          Block
+```
+
+The model runs locally after being downloaded and does not require an external API call for inference.
+
+---
+
+# Injection Guard — Layer 4: Llama Guard 3
+
+If the previous layers do not detect an injection, the system can send the normalized text to:
+
+```text
+llama-guard3:1b
+```
+
+through Ollama.
+
+If Llama Guard returns an unsafe classification, the request is blocked.
+
+If Ollama is unavailable, the system logs the failure and continues to the final detection layer instead of terminating the entire application.
+
+---
+
+# Injection Guard — Layer 5: Subtle Patterns
+
+The final layer checks for less explicit indicators such as:
+
+```text
+[AI ...]
+[note to AI ...]
+assistant:
+human:
+<assistant>
+<human>
+format your responses as...
+always respond with...
+from now on...
+```
+
+Multiple matching subtle patterns result in the request being flagged.
+
+A single subtle match is treated as a possible indicator rather than an automatic block.
+
+---
+
+# Injection Detection Flow
+
+The complete detection sequence is:
+
+```text
+Input
+  │
+  ▼
+Normalize Text
+  │
+  ▼
+L1 — Regex
+  │
+  ├── Injection → Block
+  │
+  ▼
+L2 — Synonym Detection
+  │
+  ├── Injection → Block
+  │
+  ▼
+L3 — DeBERTa
+  │
+  ├── Injection ≥ 0.85 → Block
+  │
+  ▼
+L4 — Llama Guard 3
+  │
+  ├── Unsafe → Block
+  │
+  ▼
+L5 — Subtle Patterns
+  │
+  ├── Multiple hits → Block
+  │
+  ▼
+Allow
+```
+
+---
+
+# Where the Injection Guard Is Applied
+
+The security pipeline is applied at different stages.
+
+## 1. Document Upload
+
+Extracted document text is sanitized using regex-based rules before indexing.
+
+```text
+Document
+   ↓
+Extraction
+   ↓
+Regex Sanitization
+   ↓
+Chunking
+   ↓
+Indexing
+```
+
+## 2. User Query
+
+User queries go through the full detection pipeline:
+
+```text
+Regex
+  ↓
+Synonym Detection
+  ↓
+DeBERTa
+  ↓
+Llama Guard
+  ↓
+Subtle Pattern Detection
+```
+
+Queries with sufficiently high injection confidence are rejected.
+
+## 3. Retrieved Chunks
+
+Retrieved chunks can be scanned before being passed to the generator.
+
+For already-sanitized indexed content, regex-only scanning can be used for performance.
+
+Flagged chunks are removed from the generation context.
+
+## 4. LLM Output
+
+The generated answer is passed through regex-based sanitization before being returned to the user.
+
+This provides a final lightweight output check without running the full ML pipeline again.
+
+---
+
+# Conversation-Aware Query Resolution
+
+The application supports follow-up questions.
+
+For example:
+
+```text
+Q1:
+What is the stock amount of item X?
+
+Q2:
+What about item Y?
+```
+
+The second question can be resolved using conversation context before retrieval.
+
+Conceptually:
+
+```text
+What is the stock amount of item X?
++
+What about item Y?
+```
+
+becomes a resolved query such as:
+
+```text
+What is the stock amount of item Y?
+```
+
+The resolved question is then used for document retrieval.
+
+The last **5 conversation turns** are also provided to the generation stage as user/assistant context.
+
+---
+
+# Answer Generation
+
+After retrieval and reranking, the top 5 relevant chunks are passed to the generator.
+
+Current generator:
+
+```text
+Gemini 2.0 Flash-Lite
+```
+
+The generation stage receives:
+
+```text
+User Question
+        +
+Retrieved Document Context
+        +
+Recent Conversation History
+```
+
+The model is instructed to answer using the retrieved document context.
+
+If the relevance gate rejects the retrieved context, Gemini is not called.
+
+---
+
+# Source Attribution
+
+Source attribution is generated by the application rather than by the LLM.
+
+Retrieved chunks retain their page metadata.
+
+After generation, the application collects the relevant page numbers and appends them to the answer.
+
+Example:
+
+```text
+The Customer Database can be accessed from the Sales module.
+From the Summary page, click the Add (+) option to create a new customer.
+
+[Sources: Pages 4, 7]
+```
+
+This prevents the LLM from inventing page numbers or source references.
+
+---
+
+# Observability
+
+The application supports:
+
+* **Langfuse**
+* **LangSmith**
+
+These can be used to monitor and inspect the RAG pipeline, including retrieval and generation behavior.
+
+Example environment configuration:
+
+```env
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_HOST=https://cloud.langfuse.com
+
+LANGCHAIN_API_KEY=ls__...
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_PROJECT=hybrid-rag
+```
+
+---
+
+# Complete RAG Pipeline
+
+The complete execution flow is:
+
+```text
+┌──────────────────────┐
+│   Upload PDF/DOCX    │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│  Document Extraction │
+│ PyPDF2 / Docling /   │
+│     python-docx      │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Injection Sanitizing │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Structure-Aware      │
+│ Chunking             │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│      Indexing        │
+│ ChromaDB + BM25      │
+└──────────────────────┘
+
+
+        USER QUESTION
+             │
+             ▼
+┌──────────────────────┐
+│ Query Injection      │
+│ Guard                │
+│ Regex + Synonym +    │
+│ DeBERTa + Llama      │
+│ Guard + Subtle       │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Query Resolution     │
+│ + Conversation       │
+│ Context              │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Hybrid Retrieval     │
+│ ChromaDB + BM25      │
+│       Top 20         │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Retrieved Chunk      │
+│ Injection Scan       │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Cross-Encoder        │
+│ Reranking            │
+│       Top 5          │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Deterministic        │
+│ Relevance Gate       │
+└───────┬───────┬──────┘
+        │       │
+   Relevant    Not Relevant
+        │       │
+        ▼       ▼
+     Gemini   Not Found
+        │
+        ▼
+┌──────────────────────┐
+│ LLM Output Scan      │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Deterministic Source │
+│ Attribution           │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Grounded Answer      │
+│ + Page Sources       │
+└──────────────────────┘
+```
+
+---
+
+# Known Limitations
+
+## In-Memory Vector Store
+
+The current ChromaDB configuration uses an ephemeral/in-memory client.
+
+```python
+chromadb.EphemeralClient()
+```
+
+The index is therefore lost when the application restarts.
+
+For persistent storage, use:
+
+```python
+chromadb.PersistentClient(
+    path="./chroma_db"
+)
+```
+
+The BM25 index also needs to be persisted separately if persistent retrieval across restarts is required.
+
+---
+
+## Gemini Dependency
+
+Answer generation currently depends on:
+
+* Internet connectivity
+* A valid Google Gemini API key
+* Available Gemini API quota
+
+For completely local generation, the application can be adapted to use Ollama.
+
+---
+
+## Llama Guard Dependency
+
+The fourth injection-detection layer requires Ollama and:
+
+```text
+llama-guard3:1b
+```
+
+If Ollama is unavailable, the application continues without this layer.
+
+---
+
+## OCR Limitations
+
+OCR performance can decrease for:
+
+* Very low-quality scans
+* Rotated pages
+* Complex layouts
+* Unusual fonts
+* Highly graphical documents
+
+Docling and OCR provide fallback support but cannot guarantee perfect extraction for every document.
+
+---
+
+## Session Memory
+
+Conversation history is currently maintained in memory and is lost when the application restarts.
+
+---
+
+# Project Structure
+
+```text
+rag_file/
+│
+├── api.py
+├── streamlit_pdf_app.py
+├── test_guard_quick.py
+├── test_injection_guard.py
+├── requirements.txt
+├── .env
+│
+└── rag_core/
+    ├── __init__.py
+    ├── models.py
+    ├── extract.py
+    ├── chunking.py
+    ├── vector_store.py
+    ├── reranker.py
+    ├── relevance_gate.py
+    ├── injection_guard.py
+    ├── generation.py
+    └── pipeline.py
+```
+
+### Core Modules
+
+| File                   | Purpose                                    |
+| ---------------------- | ------------------------------------------ |
+| `models.py`            | Page and chunk data structures             |
+| `extract.py`           | PDF and DOCX extraction                    |
+| `chunking.py`          | Structure-aware chunking                   |
+| `vector_store.py`      | ChromaDB and BM25 retrieval                |
+| `reranker.py`          | Cross-encoder reranking                    |
+| `relevance_gate.py`    | Deterministic relevance filtering          |
+| `injection_guard.py`   | Multi-layer prompt-injection detection     |
+| `generation.py`        | Gemini generation and conversation history |
+| `pipeline.py`          | End-to-end RAG orchestration               |
+| `api.py`               | FastAPI backend                            |
+| `streamlit_pdf_app.py` | Streamlit interface                        |
+
+---
+
+# Requirements
+
+The application requires:
+
+```text
+Python 3.10+
+```
+
+Major dependencies include:
+
+```text
+sentence-transformers
 transformers
 torch
-accelerate
-ollama==0.3.3
-
-# ── Document Extraction ───────────────────────────────────────────────
-docling
-python-docx>=0.8.11
+chromadb
+rank-bm25
 PyPDF2
-
-# ── Observability ─────────────────────────────────────────────────────
-langsmith
-langfuse
-langchain-core
-
-# ── Scheduling & Utils ────────────────────────────────────────────────
-apscheduler
+docling
+python-docx
+fastapi
+uvicorn
+streamlit
 python-dotenv
-numpy
+ollama
+```
+
+Additional dependencies are listed in:
+
+```text
+requirements.txt
+```
+
+---
+
+# Summary
+
+**Ask My Documents** combines document processing, hybrid retrieval, reranking, relevance filtering, prompt-injection protection, conversation context, and LLM generation into a single RAG pipeline.
+
+The main retrieval flow is:
+
+```text
+Document
+   ↓
+Extraction
+   ↓
+Sanitization
+   ↓
+Structure-Aware Chunking
+   ↓
+ChromaDB + BM25
+   ↓
+Hybrid Retrieval
+   ↓
+Cross-Encoder Reranking
+   ↓
+Relevance Gate
+   ↓
+Gemini
+   ↓
+Grounded Answer + Sources
+```
+
+The security flow adds multiple layers of protection:
+
+```text
+Regex
+  ↓
+Synonym Detection
+  ↓
+DeBERTa
+  ↓
+Llama Guard
+  ↓
+Subtle Pattern Detection
+```
+
+The combination is designed to improve **retrieval accuracy, answer grounding, source reliability, and resistance to prompt-injection attacks** while keeping the major retrieval and security components locally executable.
